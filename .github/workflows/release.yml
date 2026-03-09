@@ -1,0 +1,131 @@
+# Copyright (c) 2024 YCSB contributors. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You
+# may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License. See accompanying
+# LICENSE file.
+
+# Builds the YCSB Redis TLS binding and publishes it as a GitHub Release.
+#
+# Trigger options:
+#   1. Push a version tag (e.g., git tag v0.18.0 && git push origin v0.18.0)
+#      → sets the Maven version to match the tag, builds the binding,
+#        and creates a downloadable GitHub Release.
+#   2. workflow_dispatch (Actions → "Run workflow" button)
+#      → prompts for an optional version string; creates a pre-release
+#        from the current default branch.
+
+name: Release YCSB Redis Binding
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Release version (e.g. 0.18.0).
+          Leave empty to use the version in pom.xml.
+        required: false
+        type: string
+      prerelease:
+        description: Mark as pre-release
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      # For tag-triggered runs the version comes from the tag (strip the "v" prefix).
+      # For workflow_dispatch runs the version comes from the input (if provided).
+      - name: Set release version in pom.xml
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            # Fall back to whatever is in pom.xml (may still say SNAPSHOT)
+            VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          mvn versions:set -DnewVersion="${VERSION}" -DgenerateBackupPoms=false -q
+
+      - name: Build Redis binding distribution package
+        run: mvn -pl redis -am package -DskipTests -q
+
+      - name: Locate distribution archive
+        id: artifact
+        run: |
+          ARTIFACT_PATH=$(find redis/target -name "ycsb-redis-binding-*.tar.gz" | head -1)
+          echo "path=${ARTIFACT_PATH}" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "${ARTIFACT_PATH}")" >> "$GITHUB_OUTPUT"
+
+      # Always upload as a workflow artifact so it can be downloaded from the
+      # Actions run page regardless of whether a GitHub Release is created.
+      - name: Upload artifact to workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ycsb-redis-binding-${{ steps.version.outputs.version }}
+          path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+          retention-days: 90
+
+      # Only create a GitHub Release for tag-triggered builds.
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "YCSB Redis TLS Binding ${{ github.ref_name }}" \
+            --generate-notes \
+            "${{ steps.artifact.outputs.path }}"
+
+      # For manual workflow_dispatch builds: create a pre-release so the
+      # artifact is also visible on the Releases page for easy downloading.
+      - name: Create pre-release (manual dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TAG="build-$(date -u +%Y%m%d%H%M%S)"
+          git tag "${TAG}"
+          git push origin "${TAG}"
+          PRERELEASE_FLAG=""
+          if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          gh release create "${TAG}" \
+            --title "YCSB Redis TLS Binding ${{ steps.version.outputs.version }} (${TAG})" \
+            --notes "Manual build triggered via workflow_dispatch." \
+            ${PRERELEASE_FLAG} \
+            "${{ steps.artifact.outputs.path }}"

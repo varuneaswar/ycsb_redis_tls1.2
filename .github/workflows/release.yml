@@ -16,7 +16,7 @@
 # Builds the YCSB Redis TLS binding and publishes it as a GitHub Release.
 #
 # Trigger options:
-#   1. Push to master/main branch
+#   1. Push to master/main (or any development branch)
 #      → builds the binding and creates/updates a rolling
 #        "v0.18.0-SNAPSHOT" pre-release so the latest snapshot is always
 #        available as a downloadable GitHub Release.
@@ -34,6 +34,7 @@ on:
     branches:
       - master
       - main
+      - 'copilot/create-redis-binding-0180-snapshot'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -105,12 +106,15 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      # For pushes to master/main: create or update the rolling snapshot
-      # pre-release so the latest SNAPSHOT build is always downloadable.
+      # For master/main/development branch pushes: create or update the rolling
+      # snapshot pre-release so the latest SNAPSHOT build is always downloadable
+      # from GitHub Releases.
       - name: Publish rolling snapshot pre-release (branch push)
         if: >
           github.event_name == 'push' &&
-          (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+          (github.ref == 'refs/heads/master' ||
+           github.ref == 'refs/heads/main' ||
+           github.ref == 'refs/heads/copilot/create-redis-binding-0180-snapshot')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

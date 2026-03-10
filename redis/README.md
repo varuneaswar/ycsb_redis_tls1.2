@@ -39,6 +39,9 @@ Set host, port, password, and cluster mode in the workload you plan to run.
 - `redis.port`
 - `redis.password`
   * Don't set the password if redis auth is disabled.
+- `redis.username`
+  * ACL username for Redis 6+ (AUTH username password). Optional.
+  * Leave unset to use the legacy password-only AUTH command.
 - `redis.cluster`
   * Set the cluster parameter to `true` if redis cluster mode is enabled.
   * Default is `false`.

@@ -64,6 +64,7 @@ public class RedisClient extends DB {
   public static final String HOST_PROPERTY = "redis.host";
   public static final String PORT_PROPERTY = "redis.port";
   public static final String PASSWORD_PROPERTY = "redis.password";
+  public static final String USERNAME_PROPERTY = "redis.username";
   public static final String CLUSTER_PROPERTY = "redis.cluster";
   public static final String TIMEOUT_PROPERTY = "redis.timeout";
   public static final String SSL_PROPERTY = "redis.ssl";
@@ -88,6 +89,7 @@ public class RedisClient extends DB {
 
     boolean sslEnabled = Boolean.parseBoolean(props.getProperty(SSL_PROPERTY, "false"));
     String password = props.getProperty(PASSWORD_PROPERTY);
+    String username = props.getProperty(USERNAME_PROPERTY);
     String redisTimeout = props.getProperty(TIMEOUT_PROPERTY);
     int timeout = redisTimeout != null ? Integer.parseInt(redisTimeout) : Protocol.DEFAULT_TIMEOUT;
 
@@ -116,12 +118,23 @@ public class RedisClient extends DB {
       jedisClusterNodes.add(new HostAndPort(host, port));
       JedisPoolConfig poolConfig = new JedisPoolConfig();
       if (sslEnabled) {
-        jedisCluster = new JedisCluster(jedisClusterNodes, timeout, timeout,
-            JedisCluster.DEFAULT_MAX_ATTEMPTS, password, null, poolConfig,
-            true, sslSocketFactory, null, null, null);
+        if (username != null) {
+          jedisCluster = new JedisCluster(jedisClusterNodes, timeout, timeout,
+              JedisCluster.DEFAULT_MAX_ATTEMPTS, username, password, null, poolConfig,
+              true, sslSocketFactory, null, null, null);
+        } else {
+          jedisCluster = new JedisCluster(jedisClusterNodes, timeout, timeout,
+              JedisCluster.DEFAULT_MAX_ATTEMPTS, password, null, poolConfig,
+              true, sslSocketFactory, null, null, null);
+        }
       } else if (password != null) {
-        jedisCluster = new JedisCluster(jedisClusterNodes, timeout, timeout,
-            JedisCluster.DEFAULT_MAX_ATTEMPTS, password, poolConfig);
+        if (username != null) {
+          jedisCluster = new JedisCluster(jedisClusterNodes, timeout, timeout,
+              JedisCluster.DEFAULT_MAX_ATTEMPTS, username, password, null, poolConfig);
+        } else {
+          jedisCluster = new JedisCluster(jedisClusterNodes, timeout, timeout,
+              JedisCluster.DEFAULT_MAX_ATTEMPTS, password, poolConfig);
+        }
       } else {
         jedisCluster = new JedisCluster(jedisClusterNodes);
       }
@@ -134,7 +147,11 @@ public class RedisClient extends DB {
       }
       jedis.connect();
       if (password != null) {
-        ((BasicCommands) jedis).auth(password);
+        if (username != null) {
+          ((BasicCommands) jedis).auth(username, password);
+        } else {
+          ((BasicCommands) jedis).auth(password);
+        }
       }
     }
   }

@@ -29,15 +29,19 @@ import site.ycsb.DB;
 import site.ycsb.DBException;
 import site.ycsb.Status;
 import site.ycsb.StringByteIterator;
-import redis.clients.jedis.BasicCommands;
+import redis.clients.jedis.commands.BasicCommands;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisCluster;
-import redis.clients.jedis.JedisCommands;
+import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.Protocol;
 
-import java.io.Closeable;
-import java.io.IOException;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.FileInputStream;
+import java.security.KeyStore;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.HashSet;
@@ -54,13 +58,19 @@ import java.util.Vector;
  */
 public class RedisClient extends DB {
 
-  private JedisCommands jedis;
+  private Jedis jedis;
+  private JedisCluster jedisCluster;
 
   public static final String HOST_PROPERTY = "redis.host";
   public static final String PORT_PROPERTY = "redis.port";
   public static final String PASSWORD_PROPERTY = "redis.password";
   public static final String CLUSTER_PROPERTY = "redis.cluster";
   public static final String TIMEOUT_PROPERTY = "redis.timeout";
+  public static final String SSL_PROPERTY = "redis.ssl";
+  public static final String SSL_KEYSTORE_PATH_PROPERTY = "redis.ssl.keystore.path";
+  public static final String SSL_KEYSTORE_PASSWORD_PROPERTY = "redis.ssl.keystore.password";
+  public static final String SSL_TRUSTSTORE_PATH_PROPERTY = "redis.ssl.truststore.path";
+  public static final String SSL_TRUSTSTORE_PASSWORD_PROPERTY = "redis.ssl.truststore.password";
 
   public static final String INDEX_KEY = "_indices";
 
@@ -76,32 +86,100 @@ public class RedisClient extends DB {
     }
     String host = props.getProperty(HOST_PROPERTY);
 
+    boolean sslEnabled = Boolean.parseBoolean(props.getProperty(SSL_PROPERTY, "false"));
+    String password = props.getProperty(PASSWORD_PROPERTY);
+    String redisTimeout = props.getProperty(TIMEOUT_PROPERTY);
+    int timeout = redisTimeout != null ? Integer.parseInt(redisTimeout) : Protocol.DEFAULT_TIMEOUT;
+
+    SSLSocketFactory sslSocketFactory = null;
+    if (sslEnabled) {
+      String keystorePath = props.getProperty(SSL_KEYSTORE_PATH_PROPERTY);
+      String keystorePassword = props.getProperty(SSL_KEYSTORE_PASSWORD_PROPERTY);
+      String truststorePath = props.getProperty(SSL_TRUSTSTORE_PATH_PROPERTY);
+      String truststorePassword = props.getProperty(SSL_TRUSTSTORE_PASSWORD_PROPERTY);
+      if (keystorePath != null || truststorePath != null) {
+        try {
+          SSLContext sslContext = buildSSLContext(
+              keystorePath, keystorePassword, truststorePath, truststorePassword);
+          sslSocketFactory = sslContext.getSocketFactory();
+        } catch (Exception e) {
+          throw new DBException("Failed to create SSL context"
+              + " (keystore=" + keystorePath + ", truststore=" + truststorePath + "): "
+              + e.getMessage());
+        }
+      }
+    }
+
     boolean clusterEnabled = Boolean.parseBoolean(props.getProperty(CLUSTER_PROPERTY));
     if (clusterEnabled) {
       Set<HostAndPort> jedisClusterNodes = new HashSet<>();
       jedisClusterNodes.add(new HostAndPort(host, port));
-      jedis = new JedisCluster(jedisClusterNodes);
-    } else {
-      String redisTimeout = props.getProperty(TIMEOUT_PROPERTY);
-      if (redisTimeout != null){
-        jedis = new Jedis(host, port, Integer.parseInt(redisTimeout));
+      JedisPoolConfig poolConfig = new JedisPoolConfig();
+      if (sslEnabled) {
+        jedisCluster = new JedisCluster(jedisClusterNodes, timeout, timeout,
+            JedisCluster.DEFAULT_MAX_ATTEMPTS, password, null, poolConfig,
+            true, sslSocketFactory, null, null, null);
+      } else if (password != null) {
+        jedisCluster = new JedisCluster(jedisClusterNodes, timeout, timeout,
+            JedisCluster.DEFAULT_MAX_ATTEMPTS, password, poolConfig);
       } else {
-        jedis = new Jedis(host, port);
+        jedisCluster = new JedisCluster(jedisClusterNodes);
       }
-      ((Jedis) jedis).connect();
+    } else {
+      if (sslEnabled) {
+        jedis = new Jedis(host, port, timeout, timeout,
+            true, sslSocketFactory, null, null);
+      } else {
+        jedis = new Jedis(host, port, timeout);
+      }
+      jedis.connect();
+      if (password != null) {
+        ((BasicCommands) jedis).auth(password);
+      }
+    }
+  }
+
+  private static SSLContext buildSSLContext(String keystorePath, String keystorePassword,
+      String truststorePath, String truststorePassword) throws Exception {
+    KeyManagerFactory kmf = null;
+    if (keystorePath != null) {
+      KeyStore keyStore = KeyStore.getInstance("JKS");
+      char[] ksPass = keystorePassword != null ? keystorePassword.toCharArray() : new char[0];
+      try (FileInputStream fis = new FileInputStream(keystorePath)) {
+        keyStore.load(fis, ksPass);
+      }
+      kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+      kmf.init(keyStore, ksPass);
     }
 
-    String password = props.getProperty(PASSWORD_PROPERTY);
-    if (password != null) {
-      ((BasicCommands) jedis).auth(password);
+    TrustManagerFactory tmf = null;
+    if (truststorePath != null) {
+      KeyStore trustStore = KeyStore.getInstance("JKS");
+      char[] tsPass = truststorePassword != null ? truststorePassword.toCharArray() : new char[0];
+      try (FileInputStream fis = new FileInputStream(truststorePath)) {
+        trustStore.load(fis, tsPass);
+      }
+      tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+      tmf.init(trustStore);
     }
+
+    SSLContext sslContext = SSLContext.getInstance("TLS");
+    sslContext.init(
+        kmf != null ? kmf.getKeyManagers() : null,
+        tmf != null ? tmf.getTrustManagers() : null,
+        null);
+    return sslContext;
   }
 
   public void cleanup() throws DBException {
     try {
-      ((Closeable) jedis).close();
-    } catch (IOException e) {
-      throw new DBException("Closing connection failed.");
+      if (jedisCluster != null) {
+        jedisCluster.close();
+      } else if (jedis != null) {
+        jedis.close();
+      }
+    } catch (Exception e) {
+      throw new DBException("Closing connection failed: " + e.getMessage());
     }
   }
 
@@ -117,15 +195,44 @@ public class RedisClient extends DB {
 
   // XXX jedis.select(int index) to switch to `table`
 
+  private String hmset(String key, Map<String, String> hash) {
+    return jedisCluster != null ? jedisCluster.hmset(key, hash) : jedis.hmset(key, hash);
+  }
+
+  private List<String> hmget(String key, String... fields) {
+    return jedisCluster != null ? jedisCluster.hmget(key, fields) : jedis.hmget(key, fields);
+  }
+
+  private Map<String, String> hgetAll(String key) {
+    return jedisCluster != null ? jedisCluster.hgetAll(key) : jedis.hgetAll(key);
+  }
+
+  private Long zadd(String key, double score, String member) {
+    return jedisCluster != null ? jedisCluster.zadd(key, score, member) : jedis.zadd(key, score, member);
+  }
+
+  private Set<String> zrangeByScore(String key, double min, double max, int offset, int count) {
+    return jedisCluster != null
+        ? jedisCluster.zrangeByScore(key, min, max, offset, count)
+        : jedis.zrangeByScore(key, min, max, offset, count);
+  }
+
+  private Long del(String key) {
+    return jedisCluster != null ? jedisCluster.del(key) : jedis.del(key);
+  }
+
+  private Long zrem(String key, String member) {
+    return jedisCluster != null ? jedisCluster.zrem(key, member) : jedis.zrem(key, member);
+  }
+
   @Override
   public Status read(String table, String key, Set<String> fields,
       Map<String, ByteIterator> result) {
     if (fields == null) {
-      StringByteIterator.putAllAsByteIterators(result, jedis.hgetAll(key));
+      StringByteIterator.putAllAsByteIterators(result, hgetAll(key));
     } else {
-      String[] fieldArray =
-          (String[]) fields.toArray(new String[fields.size()]);
-      List<String> values = jedis.hmget(key, fieldArray);
+      String[] fieldArray = fields.toArray(new String[fields.size()]);
+      List<String> values = hmget(key, fieldArray);
 
       Iterator<String> fieldIterator = fields.iterator();
       Iterator<String> valueIterator = values.iterator();
@@ -142,9 +249,8 @@ public class RedisClient extends DB {
   @Override
   public Status insert(String table, String key,
       Map<String, ByteIterator> values) {
-    if (jedis.hmset(key, StringByteIterator.getStringMap(values))
-        .equals("OK")) {
-      jedis.zadd(INDEX_KEY, hash(key), key);
+    if (hmset(key, StringByteIterator.getStringMap(values)).equals("OK")) {
+      zadd(INDEX_KEY, hash(key), key);
       return Status.OK;
     }
     return Status.ERROR;
@@ -152,22 +258,20 @@ public class RedisClient extends DB {
 
   @Override
   public Status delete(String table, String key) {
-    return jedis.del(key) == 0 && jedis.zrem(INDEX_KEY, key) == 0 ? Status.ERROR
-        : Status.OK;
+    return del(key) == 0 && zrem(INDEX_KEY, key) == 0 ? Status.ERROR : Status.OK;
   }
 
   @Override
   public Status update(String table, String key,
       Map<String, ByteIterator> values) {
-    return jedis.hmset(key, StringByteIterator.getStringMap(values))
-        .equals("OK") ? Status.OK : Status.ERROR;
+    return hmset(key, StringByteIterator.getStringMap(values)).equals("OK")
+        ? Status.OK : Status.ERROR;
   }
 
   @Override
   public Status scan(String table, String startkey, int recordcount,
       Set<String> fields, Vector<HashMap<String, ByteIterator>> result) {
-    Set<String> keys = jedis.zrangeByScore(INDEX_KEY, hash(startkey),
-        Double.POSITIVE_INFINITY, 0, recordcount);
+    Set<String> keys = zrangeByScore(INDEX_KEY, hash(startkey), Double.POSITIVE_INFINITY, 0, recordcount);
 
     HashMap<String, ByteIterator> values;
     for (String key : keys) {

@@ -42,6 +42,18 @@ Set host, port, password, and cluster mode in the workload you plan to run.
 - `redis.cluster`
   * Set the cluster parameter to `true` if redis cluster mode is enabled.
   * Default is `false`.
+- `redis.ssl`
+  * Set to `true` to enable TLS/SSL encryption (required for Redis 7.4+ clusters with TLS).
+  * Default is `false`.
+- `redis.ssl.keystore.path`
+  * Path to a JKS keystore file for mutual TLS (client certificate). Optional.
+- `redis.ssl.keystore.password`
+  * Password for the keystore file. Optional.
+- `redis.ssl.truststore.path`
+  * Path to a JKS truststore file to verify the Redis server certificate. Optional.
+  * When omitted, the default JVM truststore is used.
+- `redis.ssl.truststore.password`
+  * Password for the truststore file. Optional.
 
 Or, you can set configs with the shell command, EG:
 

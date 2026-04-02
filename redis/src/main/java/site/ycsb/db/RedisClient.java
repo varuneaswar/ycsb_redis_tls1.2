@@ -60,6 +60,7 @@ public class RedisClient extends DB {
 
   private Jedis jedis;
   private JedisCluster jedisCluster;
+  private int expireSeconds;
 
   public static final String HOST_PROPERTY = "redis.host";
   public static final String PORT_PROPERTY = "redis.port";
@@ -72,6 +73,8 @@ public class RedisClient extends DB {
   public static final String SSL_KEYSTORE_PASSWORD_PROPERTY = "redis.ssl.keystore.password";
   public static final String SSL_TRUSTSTORE_PATH_PROPERTY = "redis.ssl.truststore.path";
   public static final String SSL_TRUSTSTORE_PASSWORD_PROPERTY = "redis.ssl.truststore.password";
+  public static final String EXPIRE_PROPERTY = "redis.expire";
+  public static final int EXPIRE_PROPERTY_DEFAULT = 0;
 
   public static final String INDEX_KEY = "_indices";
 
@@ -92,6 +95,8 @@ public class RedisClient extends DB {
     String username = props.getProperty(USERNAME_PROPERTY);
     String redisTimeout = props.getProperty(TIMEOUT_PROPERTY);
     int timeout = redisTimeout != null ? Integer.parseInt(redisTimeout) : Protocol.DEFAULT_TIMEOUT;
+    expireSeconds = Integer.parseInt(
+        props.getProperty(EXPIRE_PROPERTY, String.valueOf(EXPIRE_PROPERTY_DEFAULT)));
 
     SSLSocketFactory sslSocketFactory = null;
     if (sslEnabled) {
@@ -242,6 +247,10 @@ public class RedisClient extends DB {
     return jedisCluster != null ? jedisCluster.zrem(key, member) : jedis.zrem(key, member);
   }
 
+  private Long expire(String key, int seconds) {
+    return jedisCluster != null ? jedisCluster.expire(key, seconds) : jedis.expire(key, seconds);
+  }
+
   @Override
   public Status read(String table, String key, Set<String> fields,
       Map<String, ByteIterator> result) {
@@ -268,6 +277,9 @@ public class RedisClient extends DB {
       Map<String, ByteIterator> values) {
     if (hmset(key, StringByteIterator.getStringMap(values)).equals("OK")) {
       zadd(INDEX_KEY, hash(key), key);
+      if (expireSeconds > 0) {
+        expire(key, expireSeconds);
+      }
       return Status.OK;
     }
     return Status.ERROR;
@@ -281,8 +293,13 @@ public class RedisClient extends DB {
   @Override
   public Status update(String table, String key,
       Map<String, ByteIterator> values) {
-    return hmset(key, StringByteIterator.getStringMap(values)).equals("OK")
-        ? Status.OK : Status.ERROR;
+    if (!hmset(key, StringByteIterator.getStringMap(values)).equals("OK")) {
+      return Status.ERROR;
+    }
+    if (expireSeconds > 0) {
+      expire(key, expireSeconds);
+    }
+    return Status.OK;
   }
 
   @Override

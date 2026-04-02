@@ -57,6 +57,14 @@ Set host, port, password, and cluster mode in the workload you plan to run.
   * When omitted, the default JVM truststore is used.
 - `redis.ssl.truststore.password`
   * Password for the truststore file. Optional.
+- `redis.expire`
+  * TTL in seconds to set on each key after every `insert` and `update`. Default is `0` (disabled).
+  * When set to a positive integer, a Redis `EXPIRE` command is issued on the key after every write, making the key eligible for eviction under `volatile-*` eviction policies and ensuring natural expiry under all policies.
+  * **Eviction policy interactions:**
+    * `volatile-lru`, `volatile-lfu`, `volatile-random` — TTL is **required** for keys to be eviction-eligible. Enable `redis.expire` for these policies so Redis can reclaim memory under pressure.
+    * `volatile-ttl` — Keys with the smallest remaining TTL are evicted first. The TTL value you choose directly affects which keys are prioritized for eviction; all YCSB keys refreshed on every write will have similar remaining TTLs, so eviction behaves approximately like `volatile-random`.
+    * `allkeys-lru`, `allkeys-lfu`, `allkeys-random` — All keys are eviction-eligible regardless of TTL. Enabling `redis.expire` here adds natural key expiry; if the TTL is shorter than your benchmark run duration, keys will disappear from Redis and cause read misses.
+    * `noeviction` — Redis never evicts keys. Enabling `redis.expire` causes keys to delete themselves after the TTL fires but does not help with memory pressure.
 
 Or, you can set configs with the shell command, EG:
 
